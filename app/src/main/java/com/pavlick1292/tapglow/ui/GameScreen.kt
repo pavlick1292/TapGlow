@@ -11,7 +11,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Button
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -25,7 +24,6 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.input.pointer.pointerInput
@@ -51,30 +49,43 @@ private data class ShapeItem(
 )
 
 // ---------- Константы ----------
-private const val INTRIGUE_HIGHLIGHT_MS = 800L
-private const val IDLE_DURATION_MS = 1500L
-private const val TAP_TIMEOUT_MS = 3000L
+private const val INTRIGUE_BLINK_MS = 700L
+private const val INTRIGUE_BLINKS = 2
+private const val IDLE_DURATION_MS = 800L
+private const val RESULT_SHOW_MS = 1200L
+
+// Функция таймаута на тап: 3 сек на 1 ур, -0.2 сек каждые 3 ур, минимум 0.8
+private fun tapTimeoutMs(level: Int): Long {
+    val reduction = (level - 1) / 3 * 200L
+    return (3000L - reduction).coerceAtLeast(800L)
+}
+
+// Пауза интриги: ускоряется с уровнем
+private fun intrigueMs(level: Int): Long {
+    val fast = (INTRIGUE_BLINK_MS - (level - 1) * 40L).coerceAtLeast(300L)
+    return fast
+}
 
 @Composable
 fun GameScreen() {
+    var level by remember { mutableStateOf(1) }
     var phase by remember { mutableStateOf(Phase.Idle) }
     var highlightedIndex by remember { mutableStateOf(-1) }
     var targetIndex by remember { mutableStateOf(-1) }
     var tappedIndex by remember { mutableStateOf(-1) }
     var isWin by remember { mutableStateOf(false) }
-    var timeLeftMs by remember { mutableStateOf(TAP_TIMEOUT_MS) }
-
-    // Прогресс эффекта вспышки при результате (0..1)
+    var timeLeftMs by remember { mutableStateOf(tapTimeoutMs(1)) }
     var resultFlash by remember { mutableStateOf(0f) }
 
-    val shapes = remember {
-        listOf(
-            ShapeItem(ShapeType.Circle, -0.55f, 0f),
-            ShapeItem(ShapeType.Square, 0.55f, 0f)
-        )
+    // Количество фигур: 2, +1 каждые 4 уровня, максимум 5
+    val shapeCount = (2 + (level - 1) / 4).coerceAtMost(5)
+
+    // Позиции фигур в зависимости от количества
+    val shapes = remember(shapeCount) {
+        buildShapes(shapeCount)
     }
 
-    // Глобальный пульс времени
+    // Глобальные пульсы
     var pulse by remember { mutableStateOf(0f) }
     LaunchedEffect(Unit) {
         while (true) {
@@ -82,8 +93,6 @@ fun GameScreen() {
             delay(16L)
         }
     }
-
-    // Idle-«дыхание»: плавный подъём-спад 0..1
     var breath by remember { mutableStateOf(0f) }
     LaunchedEffect(Unit) {
         while (true) {
@@ -93,37 +102,42 @@ fun GameScreen() {
     }
 
     fun startRound() {
-        phase = Phase.Idle
-        highlightedIndex = -1
         tappedIndex = -1
         isWin = false
-        timeLeftMs = TAP_TIMEOUT_MS
         resultFlash = 0f
+        highlightedIndex = -1
+        timeLeftMs = tapTimeoutMs(level)
         targetIndex = shapes.indices.random()
+        phase = Phase.Idle
     }
 
-    LaunchedEffect(Unit) { startRound() }
+    // Автозапуск при смене уровня
+    LaunchedEffect(level) { startRound() }
 
-    LaunchedEffect(phase, targetIndex) {
+    LaunchedEffect(phase, targetIndex, level) {
         when (phase) {
             Phase.Idle -> {
                 delay(IDLE_DURATION_MS)
                 phase = Phase.Intrigue
             }
             Phase.Intrigue -> {
-                for (i in shapes.indices) {
-                    highlightedIndex = i
-                    delay(INTRIGUE_HIGHLIGHT_MS)
+                // Мигаем ТОЛЬКО правильной фигурой
+                val blink = intrigueMs(level)
+                repeat(INTRIGUE_BLINKS) {
+                    highlightedIndex = targetIndex
+                    delay(blink)
+                    highlightedIndex = -1
+                    delay(blink / 2)
                 }
-                highlightedIndex = -1
                 phase = Phase.WaitTap
             }
             Phase.WaitTap -> {
+                val total = tapTimeoutMs(level)
                 val start = System.currentTimeMillis()
                 while (timeLeftMs > 0 && phase == Phase.WaitTap) {
                     delay(16L)
                     val elapsed = System.currentTimeMillis() - start
-                    timeLeftMs = (TAP_TIMEOUT_MS - elapsed).coerceAtLeast(0L)
+                    timeLeftMs = (total - elapsed).coerceAtLeast(0L)
                 }
                 if (phase == Phase.WaitTap) {
                     tappedIndex = -1
@@ -132,12 +146,16 @@ fun GameScreen() {
                 }
             }
             Phase.Result -> {
-                // Анимация вспышки результата
+                // Анимация вспышки 0..1
                 val start = System.currentTimeMillis()
                 while (resultFlash < 1f) {
-                    resultFlash = ((System.currentTimeMillis() - start) / 600f).coerceIn(0f, 1f)
+                    resultFlash = ((System.currentTimeMillis() - start) / 500f).coerceIn(0f, 1f)
                     delay(16L)
                 }
+                // Пауза, чтобы игрок увидел результат
+                delay(RESULT_SHOW_MS)
+                // Автоматически следующий раунд + уровень вверх
+                level += 1
             }
         }
     }
@@ -153,17 +171,18 @@ fun GameScreen() {
             .padding(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Text("Уровень 1", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+        Text("Уровень $level", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(8.dp))
 
-        // Таймер-бар с 3D-градиентом
+        // Таймер-бар
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(14.dp)
                 .background(Color(0xFF1A1A28), RoundedCornerShape(7.dp))
         ) {
-            val frac = (timeLeftMs.toFloat() / TAP_TIMEOUT_MS).coerceIn(0f, 1f)
+            val total = tapTimeoutMs(level).toFloat()
+            val frac = (timeLeftMs / total).coerceIn(0f, 1f)
             Box(
                 modifier = Modifier
                     .fillMaxWidth(frac)
@@ -178,7 +197,6 @@ fun GameScreen() {
                         RoundedCornerShape(7.dp)
                     )
             )
-            // Блик сверху на баре
             Box(
                 modifier = Modifier
                     .fillMaxWidth(frac)
@@ -191,7 +209,7 @@ fun GameScreen() {
 
         val hint = when (phase) {
             Phase.Idle -> "Приготовься..."
-            Phase.Intrigue -> "Смотри внимательно..."
+            Phase.Intrigue -> "Запоминай!"
             Phase.WaitTap -> "ЖМИ!"
             Phase.Result -> if (isWin) "Угадал!" else "Промах!"
         }
@@ -215,11 +233,11 @@ fun GameScreen() {
                             val h = size.height.toFloat()
                             val cx = w / 2f
                             val cy = h / 2f
-                            val radius = minOf(w, h) * 0.20f
+                            val radius = minOf(w, h) * 0.16f
 
                             shapes.forEachIndexed { index, shape ->
-                                val sx = cx + shape.offsetX * w * 0.35f
-                                val sy = cy + shape.offsetY * h * 0.35f
+                                val sx = cx + shape.offsetX * w * 0.5f
+                                val sy = cy + shape.offsetY * h * 0.5f
                                 val dx = offset.x - sx
                                 val dy = offset.y - sy
                                 val inside = when (shape.type) {
@@ -239,7 +257,7 @@ fun GameScreen() {
                 val h = size.height
                 val cx = w / 2f
                 val cy = h / 2f
-                val radius = minOf(w, h) * 0.20f
+                val radius = minOf(w, h) * 0.16f
 
                 // Виньетка
                 drawRect(
@@ -251,8 +269,8 @@ fun GameScreen() {
                     size = size
                 )
 
-                // Пол-«сцена» под фигурами
-                val floorY = cy + radius * 1.7f
+                // Пол-сцена
+                val floorY = cy + radius * 1.8f
                 drawRect(
                     brush = Brush.horizontalGradient(
                         listOf(
@@ -265,7 +283,6 @@ fun GameScreen() {
                     topLeft = Offset(0f, floorY),
                     size = Size(w, 3f)
                 )
-                // Свечение-отражение под сценой
                 drawRect(
                     brush = Brush.verticalGradient(
                         listOf(Color(0x33A78BFA), Color.Transparent)
@@ -275,25 +292,22 @@ fun GameScreen() {
                 )
 
                 shapes.forEachIndexed { index, shape ->
-                    val sx = cx + shape.offsetX * w * 0.35f
-                    val sy = cy + shape.offsetY * h * 0.35f
+                    val sx = cx + shape.offsetX * w * 0.5f
+                    val sy = cy + shape.offsetY * h * 0.5f
 
                     val isHighlighted = highlightedIndex == index
                     val isWrong = phase == Phase.Result && index == tappedIndex && !isWin
                     val isRight = phase == Phase.Result && index == targetIndex && isWin
 
-                    // Масштабы
                     val idleScale = if (phase == Phase.Idle) 1f + 0.06f * breath else 1f
-                    val glowScale = if (isHighlighted) 1f + 0.10f * pulse else 1f
-                    // Отскок при результате
+                    val glowScale = if (isHighlighted) 1f + 0.12f * pulse else 1f
                     val resultScale = when {
-                        phase == Phase.Result && isRight -> 1f + 0.25f * (1f - resultFlash)
+                        phase == Phase.Result && isRight -> 1f + 0.30f * (1f - resultFlash)
                         phase == Phase.Result && isWrong -> 1f - 0.10f * (1f - resultFlash)
                         else -> 1f
                     }
                     val r = radius * idleScale * glowScale * resultScale
 
-                    // Палитра
                     val (topColor, midColor, bottomColor) = when {
                         isWrong -> Triple(Color(0xFFFF8A80), Color(0xFFE53935), Color(0xFF7A0000))
                         isRight -> Triple(Color(0xFFFFFFB3), Color(0xFFFFD54F), Color(0xFFA67C00))
@@ -301,11 +315,11 @@ fun GameScreen() {
                         else -> Triple(Color(0xFFD6C6FF), Color(0xFF7E57C2), Color(0xFF3A1F7A))
                     }
 
-                    // 1. Внешнее свечение (halo)
+                    // Halo
                     val haloAlpha = when {
-                        isHighlighted -> 0.55f + 0.25f * pulse
-                        isRight -> 0.75f
-                        isWrong -> 0.65f
+                        isHighlighted -> 0.7f + 0.25f * pulse
+                        isRight -> 0.8f
+                        isWrong -> 0.7f
                         else -> 0.18f
                     }
                     val haloColor = when {
@@ -313,7 +327,7 @@ fun GameScreen() {
                         isRight || isHighlighted -> Color(0xFFFFEB3B)
                         else -> Color(0xFF7E57C2)
                     }
-                    val haloRadius = r * (1.55f + 0.20f * pulse)
+                    val haloRadius = r * (1.6f + 0.25f * pulse)
                     drawCircle(
                         brush = Brush.radialGradient(
                             colors = listOf(
@@ -328,32 +342,32 @@ fun GameScreen() {
                         center = Offset(sx, sy)
                     )
 
-                    // 2. Вращающийся ореол при подсветке (лучи)
+                    // Вращающиеся лучи при подсветке
                     if (isHighlighted) {
-                        val angle = (System.currentTimeMillis() / 6.0).toFloat() % 360f
+                        val angle = (System.currentTimeMillis() / 5.0).toFloat() % 360f
                         rotate(degrees = angle, pivot = Offset(sx, sy)) {
                             val rays = 8
                             for (i in 0 until rays) {
                                 val a = (i * 360f / rays)
                                 val rad = Math.toRadians(a.toDouble())
-                                val rr = r * 1.6f
+                                val rr = r * 1.7f
                                 val ex = sx + (cos(rad).toFloat() * rr)
                                 val ey = sy + (sin(rad).toFloat() * rr)
                                 drawLine(
-                                    color = Color(0xFFFFEB3B).copy(alpha = 0.35f + 0.25f * pulse),
+                                    color = Color(0xFFFFEB3B).copy(alpha = 0.45f + 0.3f * pulse),
                                     start = Offset(sx, sy),
                                     end = Offset(ex, ey),
-                                    strokeWidth = 3f
+                                    strokeWidth = 3.5f
                                 )
                             }
                         }
                     }
 
-                    // 3. Тень-эллипс под фигурой
+                    // Тень
                     val shadowW = r * 2.0f
                     val shadowH = r * 0.45f
-                    val shadowAlpha = if (isHighlighted) 0.7f else 0.45f
-                    val shadowCY = sy + r * 1.25f
+                    val shadowAlpha = if (isHighlighted) 0.75f else 0.45f
+                    val shadowCY = sy + r * 1.3f
                     drawOval(
                         brush = Brush.radialGradient(
                             colors = listOf(
@@ -367,7 +381,7 @@ fun GameScreen() {
                         size = Size(shadowW, shadowH)
                     )
 
-                    // 4. Тёмное «основание» (нижняя часть, псевдо-3D толщина)
+                    // Тёмное основание
                     val depth = r * 0.35f
                     val baseDark = when {
                         isWrong -> Color(0xFF4A0000)
@@ -375,32 +389,27 @@ fun GameScreen() {
                         else -> Color(0xFF241158)
                     }
                     when (shape.type) {
-                        ShapeType.Circle -> {
-                            // нижний тёмный круг, смещённый вниз
-                            drawCircle(
-                                brush = Brush.verticalGradient(
-                                    listOf(baseDark, Color(0xFF000000).copy(alpha = 0.9f)),
-                                    startY = sy + r - depth,
-                                    endY = sy + r + depth
-                                ),
-                                radius = r,
-                                center = Offset(sx, sy + depth)
-                            )
-                        }
-                        ShapeType.Square -> {
-                            drawRect(
-                                brush = Brush.verticalGradient(
-                                    listOf(baseDark, Color(0xFF000000).copy(alpha = 0.9f)),
-                                    startY = sy + r - depth,
-                                    endY = sy + r + depth
-                                ),
-                                topLeft = Offset(sx - r, sy - r + depth),
-                                size = Size(r * 2, r * 2)
-                            )
-                        }
+                        ShapeType.Circle -> drawCircle(
+                            brush = Brush.verticalGradient(
+                                listOf(baseDark, Color(0xFF000000).copy(alpha = 0.9f)),
+                                startY = sy + r - depth,
+                                endY = sy + r + depth
+                            ),
+                            radius = r,
+                            center = Offset(sx, sy + depth)
+                        )
+                        ShapeType.Square -> drawRect(
+                            brush = Brush.verticalGradient(
+                                listOf(baseDark, Color(0xFF000000).copy(alpha = 0.9f)),
+                                startY = sy + r - depth,
+                                endY = sy + r + depth
+                            ),
+                            topLeft = Offset(sx - r, sy - r + depth),
+                            size = Size(r * 2, r * 2)
+                        )
                     }
 
-                    // 5. Верхняя часть фигуры с многозональным градиентом
+                    // Верх фигуры
                     when (shape.type) {
                         ShapeType.Circle -> drawCircle(
                             brush = Brush.verticalGradient(
@@ -422,7 +431,7 @@ fun GameScreen() {
                         )
                     }
 
-                    // 6. Радиальный «глянец» (мягкий объём)
+                    // Глянец
                     drawCircle(
                         brush = Brush.radialGradient(
                             colors = listOf(
@@ -436,25 +445,21 @@ fun GameScreen() {
                         center = Offset(sx, sy)
                     )
 
-                    // 7. Верхний «кружок-блик» (specular)
+                    // Блик
                     when (shape.type) {
-                        ShapeType.Circle -> {
-                            drawOval(
-                                color = Color.White.copy(alpha = 0.55f),
-                                topLeft = Offset(sx - r * 0.55f, sy - r * 0.65f),
-                                size = Size(r * 0.7f, r * 0.4f)
-                            )
-                        }
-                        ShapeType.Square -> {
-                            drawOval(
-                                color = Color.White.copy(alpha = 0.5f),
-                                topLeft = Offset(sx - r * 0.65f, sy - r * 0.7f),
-                                size = Size(r * 0.55f, r * 0.3f)
-                            )
-                        }
+                        ShapeType.Circle -> drawOval(
+                            color = Color.White.copy(alpha = 0.55f),
+                            topLeft = Offset(sx - r * 0.55f, sy - r * 0.65f),
+                            size = Size(r * 0.7f, r * 0.4f)
+                        )
+                        ShapeType.Square -> drawOval(
+                            color = Color.White.copy(alpha = 0.5f),
+                            topLeft = Offset(sx - r * 0.65f, sy - r * 0.7f),
+                            size = Size(r * 0.55f, r * 0.3f)
+                        )
                     }
 
-                    // 8. Верхний светлый кант (эффект края)
+                    // Верхний кант
                     when (shape.type) {
                         ShapeType.Circle -> drawCircle(
                             brush = Brush.verticalGradient(
@@ -484,7 +489,7 @@ fun GameScreen() {
                         )
                     }
 
-                    // 9. Нижний тёмный кант (глубина)
+                    // Нижний кант
                     when (shape.type) {
                         ShapeType.Circle -> drawCircle(
                             brush = Brush.verticalGradient(
@@ -514,7 +519,7 @@ fun GameScreen() {
                         )
                     }
 
-                    // 10. Расходящаяся волна при результате
+                    // Волна результата
                     if (phase == Phase.Result && (isRight || isWrong)) {
                         val waveR = r * (1.2f + 1.8f * resultFlash)
                         val waveAlpha = (1f - resultFlash) * 0.8f
@@ -525,23 +530,51 @@ fun GameScreen() {
                             center = Offset(sx, sy),
                             style = Stroke(width = 6f * (1f - resultFlash) + 2f)
                         )
-                        drawCircle(
-                            color = waveColor.copy(alpha = waveAlpha * 0.5f),
-                            radius = waveR * 1.25f,
-                            center = Offset(sx, sy),
-                            style = Stroke(width = 3f * (1f - resultFlash) + 1f)
-                        )
                     }
                 }
             }
         }
 
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "Фигур: $shapeCount",
+            color = Color.White.copy(alpha = 0.5f),
+            fontSize = 14.sp
+        )
+    }
+}
 
-        if (phase == Phase.Result) {
-            Button(onClick = { startRound() }) {
-                Text("Дальше", fontSize = 18.sp)
-            }
-        }
+// ---------- Раскладка фигур по кругу ----------
+private fun buildShapes(count: Int): List<ShapeItem> {
+    val types = listOf(
+        ShapeType.Circle,
+        ShapeType.Square,
+        ShapeType.Circle,
+        ShapeType.Square,
+        ShapeType.Circle
+    )
+    return when (count) {
+        2 -> listOf(
+            ShapeItem(ShapeType.Circle, -0.5f, 0f),
+            ShapeItem(ShapeType.Square, 0.5f, 0f)
+        )
+        3 -> listOf(
+            ShapeItem(ShapeType.Circle, 0f, -0.5f),
+            ShapeItem(ShapeType.Square, -0.55f, 0.4f),
+            ShapeItem(ShapeType.Circle, 0.55f, 0.4f)
+        )
+        4 -> listOf(
+            ShapeItem(ShapeType.Circle, -0.5f, -0.45f),
+            ShapeItem(ShapeType.Square, 0.5f, -0.45f),
+            ShapeItem(ShapeType.Circle, -0.5f, 0.45f),
+            ShapeItem(ShapeType.Square, 0.5f, 0.45f)
+        )
+        else -> listOf(
+            ShapeItem(ShapeType.Circle, 0f, -0.55f),
+            ShapeItem(ShapeType.Square, -0.6f, -0.1f),
+            ShapeItem(ShapeType.Circle, 0.6f, -0.1f),
+            ShapeItem(ShapeType.Square, -0.4f, 0.5f),
+            ShapeItem(ShapeType.Circle, 0.4f, 0.5f)
+        )
     }
 }
