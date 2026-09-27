@@ -49,21 +49,30 @@ private data class ShapeItem(
 )
 
 // ---------- Константы ----------
-private const val INTRIGUE_BLINK_MS = 700L
-private const val INTRIGUE_BLINKS = 2
-private const val IDLE_DURATION_MS = 800L
+private const val IDLE_DURATION_MS = 700L
 private const val RESULT_SHOW_MS = 1200L
 
-// Функция таймаута на тап: 3 сек на 1 ур, -0.2 сек каждые 3 ур, минимум 0.8
+// Таймаут на тап: 3 сек на 1 ур, -0.2 сек каждые 3 ур, минимум 0.8
 private fun tapTimeoutMs(level: Int): Long {
     val reduction = (level - 1) / 3 * 200L
     return (3000L - reduction).coerceAtLeast(800L)
 }
 
-// Пауза интриги: ускоряется с уровнем
-private fun intrigueMs(level: Int): Long {
-    val fast = (INTRIGUE_BLINK_MS - (level - 1) * 40L).coerceAtLeast(300L)
-    return fast
+// Длительность вспышки одной фигуры в последовательности
+private fun blinkMs(level: Int): Long {
+    return (600L - (level - 1) * 25L).coerceAtLeast(220L)
+}
+
+// Длина последовательности (сколько фигур мигнёт)
+private fun sequenceLength(level: Int): Int {
+    return when {
+        level <= 1 -> 2
+        level <= 3 -> 3
+        level <= 6 -> 4
+        level <= 10 -> 5
+        level <= 15 -> 6
+        else -> 7
+    }
 }
 
 @Composable
@@ -71,7 +80,7 @@ fun GameScreen() {
     var level by remember { mutableStateOf(1) }
     var phase by remember { mutableStateOf(Phase.Idle) }
     var highlightedIndex by remember { mutableStateOf(-1) }
-    var targetIndex by remember { mutableStateOf(-1) }
+    var targetIndex by remember { mutableStateOf(-1) } // фигура, мигавшая последней
     var tappedIndex by remember { mutableStateOf(-1) }
     var isWin by remember { mutableStateOf(false) }
     var timeLeftMs by remember { mutableStateOf(tapTimeoutMs(1)) }
@@ -79,11 +88,7 @@ fun GameScreen() {
 
     // Количество фигур: 2, +1 каждые 4 уровня, максимум 5
     val shapeCount = (2 + (level - 1) / 4).coerceAtMost(5)
-
-    // Позиции фигур в зависимости от количества
-    val shapes = remember(shapeCount) {
-        buildShapes(shapeCount)
-    }
+    val shapes = remember(shapeCount) { buildShapes(shapeCount) }
 
     // Глобальные пульсы
     var pulse by remember { mutableStateOf(0f) }
@@ -107,28 +112,35 @@ fun GameScreen() {
         resultFlash = 0f
         highlightedIndex = -1
         timeLeftMs = tapTimeoutMs(level)
-        targetIndex = shapes.indices.random()
+        // Цель пока не выбрана — определим в конце интриги
+        targetIndex = -1
         phase = Phase.Idle
     }
 
-    // Автозапуск при смене уровня
     LaunchedEffect(level) { startRound() }
 
-    LaunchedEffect(phase, targetIndex, level) {
+    LaunchedEffect(phase, level) {
         when (phase) {
             Phase.Idle -> {
                 delay(IDLE_DURATION_MS)
                 phase = Phase.Intrigue
             }
             Phase.Intrigue -> {
-                // Мигаем ТОЛЬКО правильной фигурой
-                val blink = intrigueMs(level)
-                repeat(INTRIGUE_BLINKS) {
-                    highlightedIndex = targetIndex
+                // Строим случайную последовательность индексов
+                val seqLen = sequenceLength(level)
+                val seq = List(seqLen) { shapes.indices.random() }
+                val blink = blinkMs(level)
+
+                // Показываем последовательность
+                for (idx in seq) {
+                    highlightedIndex = idx
                     delay(blink)
                     highlightedIndex = -1
-                    delay(blink / 2)
+                    delay(blink / 3)
                 }
+
+                // Правильный ответ — ПОСЛЕДНЯЯ мигнувшая фигура
+                targetIndex = seq.last()
                 phase = Phase.WaitTap
             }
             Phase.WaitTap -> {
@@ -146,15 +158,12 @@ fun GameScreen() {
                 }
             }
             Phase.Result -> {
-                // Анимация вспышки 0..1
                 val start = System.currentTimeMillis()
                 while (resultFlash < 1f) {
                     resultFlash = ((System.currentTimeMillis() - start) / 500f).coerceIn(0f, 1f)
                     delay(16L)
                 }
-                // Пауза, чтобы игрок увидел результат
                 delay(RESULT_SHOW_MS)
-                // Автоматически следующий раунд + уровень вверх
                 level += 1
             }
         }
@@ -209,11 +218,11 @@ fun GameScreen() {
 
         val hint = when (phase) {
             Phase.Idle -> "Приготовься..."
-            Phase.Intrigue -> "Запоминай!"
-            Phase.WaitTap -> "ЖМИ!"
+            Phase.Intrigue -> "Запоминай последнюю!"
+            Phase.WaitTap -> "Тапни ту, что мигала последней"
             Phase.Result -> if (isWin) "Угадал!" else "Промах!"
         }
-        Text(hint, color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+        Text(hint, color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
 
         Spacer(Modifier.height(24.dp))
 
@@ -259,7 +268,6 @@ fun GameScreen() {
                 val cy = h / 2f
                 val radius = minOf(w, h) * 0.16f
 
-                // Виньетка
                 drawRect(
                     brush = Brush.radialGradient(
                         colors = listOf(Color.Transparent, Color(0xE6000000)),
@@ -269,7 +277,6 @@ fun GameScreen() {
                     size = size
                 )
 
-                // Пол-сцена
                 val floorY = cy + radius * 1.8f
                 drawRect(
                     brush = Brush.horizontalGradient(
@@ -315,7 +322,6 @@ fun GameScreen() {
                         else -> Triple(Color(0xFFD6C6FF), Color(0xFF7E57C2), Color(0xFF3A1F7A))
                     }
 
-                    // Halo
                     val haloAlpha = when {
                         isHighlighted -> 0.7f + 0.25f * pulse
                         isRight -> 0.8f
@@ -342,7 +348,6 @@ fun GameScreen() {
                         center = Offset(sx, sy)
                     )
 
-                    // Вращающиеся лучи при подсветке
                     if (isHighlighted) {
                         val angle = (System.currentTimeMillis() / 5.0).toFloat() % 360f
                         rotate(degrees = angle, pivot = Offset(sx, sy)) {
@@ -363,7 +368,6 @@ fun GameScreen() {
                         }
                     }
 
-                    // Тень
                     val shadowW = r * 2.0f
                     val shadowH = r * 0.45f
                     val shadowAlpha = if (isHighlighted) 0.75f else 0.45f
@@ -381,7 +385,6 @@ fun GameScreen() {
                         size = Size(shadowW, shadowH)
                     )
 
-                    // Тёмное основание
                     val depth = r * 0.35f
                     val baseDark = when {
                         isWrong -> Color(0xFF4A0000)
@@ -409,7 +412,6 @@ fun GameScreen() {
                         )
                     }
 
-                    // Верх фигуры
                     when (shape.type) {
                         ShapeType.Circle -> drawCircle(
                             brush = Brush.verticalGradient(
@@ -431,7 +433,6 @@ fun GameScreen() {
                         )
                     }
 
-                    // Глянец
                     drawCircle(
                         brush = Brush.radialGradient(
                             colors = listOf(
@@ -445,7 +446,6 @@ fun GameScreen() {
                         center = Offset(sx, sy)
                     )
 
-                    // Блик
                     when (shape.type) {
                         ShapeType.Circle -> drawOval(
                             color = Color.White.copy(alpha = 0.55f),
@@ -459,7 +459,6 @@ fun GameScreen() {
                         )
                     }
 
-                    // Верхний кант
                     when (shape.type) {
                         ShapeType.Circle -> drawCircle(
                             brush = Brush.verticalGradient(
@@ -489,7 +488,6 @@ fun GameScreen() {
                         )
                     }
 
-                    // Нижний кант
                     when (shape.type) {
                         ShapeType.Circle -> drawCircle(
                             brush = Brush.verticalGradient(
@@ -519,7 +517,6 @@ fun GameScreen() {
                         )
                     }
 
-                    // Волна результата
                     if (phase == Phase.Result && (isRight || isWrong)) {
                         val waveR = r * (1.2f + 1.8f * resultFlash)
                         val waveAlpha = (1f - resultFlash) * 0.8f
@@ -537,7 +534,7 @@ fun GameScreen() {
 
         Spacer(Modifier.height(8.dp))
         Text(
-            "Фигур: $shapeCount",
+            "Фигур: $shapeCount  •  Длина: ${sequenceLength(level)}",
             color = Color.White.copy(alpha = 0.5f),
             fontSize = 14.sp
         )
@@ -546,13 +543,6 @@ fun GameScreen() {
 
 // ---------- Раскладка фигур по кругу ----------
 private fun buildShapes(count: Int): List<ShapeItem> {
-    val types = listOf(
-        ShapeType.Circle,
-        ShapeType.Square,
-        ShapeType.Circle,
-        ShapeType.Square,
-        ShapeType.Circle
-    )
     return when (count) {
         2 -> listOf(
             ShapeItem(ShapeType.Circle, -0.5f, 0f),
